@@ -20,17 +20,61 @@ private struct IconHoverArea: NSViewRepresentable {
 
     final class TrackingView: NSView {
         var changed: ((Bool) -> Void)?
+        private var inside = false
+        private var refreshScheduled = false
 
-        override init(frame: NSRect) {
-            super.init(frame: frame)
-            addTrackingArea(NSTrackingArea(rect: .zero, options: [.inVisibleRect, .activeAlways, .mouseEnteredAndExited],
-                                           owner: self, userInfo: nil))
+        private var tracking: NSTrackingArea?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func mouseEntered(with event: NSEvent) { setInside(true) }
+        override func mouseExited(with event: NSEvent) { setInside(false) }
+
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            // SwiftUI’s AppKit host can give this view a visibleRect larger than the icon.
+            let rect = bounds.intersection(visibleRect)
+            if tracking?.rect != rect {
+                if let tracking { removeTrackingArea(tracking) }
+                tracking = nil
+                if !rect.isEmpty {
+                    let area = NSTrackingArea(rect: rect, options: [.activeAlways, .mouseEnteredAndExited],
+                                              owner: self, userInfo: nil)
+                    addTrackingArea(area)
+                    tracking = area
+                }
+            }
+            refreshHoverAfterLayout()
         }
 
-        required init?(coder: NSCoder) { nil }
-        override func hitTest(_ point: NSPoint) -> NSView? { nil }
-        override func mouseEntered(with event: NSEvent) { changed?(true) }
-        override func mouseExited(with event: NSEvent) { changed?(false) }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            refreshHoverAfterLayout()
+        }
+
+        // A button can slide under a stationary pointer without receiving mouseEntered.
+        // Read its clipped bounds after AppKit and SwiftUI finish laying out this frame.
+        private func refreshHoverAfterLayout() {
+            guard !refreshScheduled else { return }
+            refreshScheduled = true
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                refreshScheduled = false
+                guard let window, window.isVisible, !isHiddenOrHasHiddenAncestor else {
+                    setInside(false)
+                    return
+                }
+                let location = window.mouseLocationOutsideOfEventStream
+                let local = convert(location, from: nil)
+                let withinWindow = NSRect(origin: .zero, size: window.frame.size).contains(location)
+                setInside(withinWindow && bounds.intersection(visibleRect).contains(local))
+            }
+        }
+
+        private func setInside(_ value: Bool) {
+            guard value != inside else { return }
+            inside = value
+            changed?(value)
+        }
     }
 
     func makeNSView(context: Context) -> TrackingView { TrackingView(frame: .zero) }
@@ -70,17 +114,21 @@ extension View {
                     Text(tip.text)
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(.white)
-                        .fixedSize()
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 9).padding(.vertical, 5)
                         .background(Color(white: 0.18), in: RoundedRectangle(cornerRadius: 6))
                         .visualEffect { effect, bubble in
                             let size = bubble.size
                             let x = min(max(sideInset, button.midX - size.width / 2), panel.width - size.width - sideInset)
-                            let below = button.maxY + 4
+                            let highest = topInset + 3
+                            let lowest = panel.height - size.height - 8
+                            let below = max(highest, button.maxY + 4)
                             let above = button.minY - size.height - 4
-                            let y = below + size.height + 8 <= panel.height ? below : max(topInset + 3, above)
-                            return effect.offset(x: x, y: y)
+                            let y = below <= lowest ? below : min(lowest, max(highest, above))
+                            return effect.offset(x: x, y: y).opacity(lowest >= highest ? 1 : 0)
                         }
+                        .frame(width: max(0, panel.width - 2 * sideInset), alignment: .leading)
                 }
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)

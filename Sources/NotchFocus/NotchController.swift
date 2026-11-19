@@ -36,18 +36,6 @@ private final class NotchHostingView: NSHostingView<NotchFace> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-enum ExpandedNotchMetrics {
-    static let width: CGFloat = 568
-    static let heightBelowCamera: CGFloat = 214
-
-    static func fittedWidth(cameraWidth: CGFloat, screenWidth: CGFloat) -> CGFloat {
-        // Centering on a wide camera must still cover the longer compact wing.
-        let focus = CompactNotchMetrics(mode: .focusing)
-        let coveredWidth = cameraWidth + 2 * max(focus.leftWing, focus.rightWing)
-        return min(max(width, coveredWidth), screenWidth - 12)
-    }
-}
-
 struct NotchPlacement {
     let screen: NSScreen
     let isHardwareNotch: Bool
@@ -75,16 +63,16 @@ struct NotchPlacement {
     }
 
     func faceFrame(expanded: Bool, mode: FocusMode) -> NSRect {
-        if expanded {
-            let width = ExpandedNotchMetrics.fittedWidth(cameraWidth: cameraWidth, screenWidth: screen.frame.width)
-            let height = topInset + ExpandedNotchMetrics.heightBelowCamera
-            return NSRect(x: centerX - width / 2, y: topY - height, width: width, height: height)
-        }
-        let metrics = CompactNotchMetrics(mode: mode)
-        let width = metrics.leftWing + cameraWidth + metrics.rightWing
-        let height = topInset + metrics.heightBelowCamera
-        let x = centerX - cameraWidth / 2 - metrics.leftWing
-        return NSRect(x: x, y: topY - height, width: width, height: height)
+        let compact = CompactNotchMetrics(mode: mode)
+        // A display without a housing opens the original centered panel from its menu item.
+        let menuPanel = !isHardwareNotch && expanded
+        let width = min(menuPanel ? 568 : compact.leftWing + cameraWidth + compact.rightWing,
+                        screen.frame.width - 12)
+        let preferredX = menuPanel ? centerX - width / 2 : centerX - cameraWidth / 2 - compact.leftWing
+        let x = min(max(preferredX, screen.frame.minX + 6), screen.frame.maxX - 6 - width)
+        let below = expanded ? ExpandedNotchMetrics.heightBelowCamera : compact.heightBelowCamera
+        let height = min(topInset + below, topY - screen.visibleFrame.minY - 6)
+        return NSRect(x: x, y: topY - height, width: width, height: height).integral
     }
 
     func plannerFrame(under face: NSRect) -> NSRect {
@@ -94,10 +82,14 @@ struct NotchPlacement {
     }
 
     func contains(_ point: CGPoint, expanded: Bool, mode: FocusMode) -> Bool {
-        let frame = faceFrame(expanded: expanded, mode: mode)
+        contains(point, in: faceFrame(expanded: expanded, mode: mode), mode: mode)
+    }
+
+    func contains(_ point: CGPoint, in frame: NSRect, mode: FocusMode) -> Bool {
         guard point.x >= frame.minX, point.x < frame.maxX, point.y >= frame.minY, point.y <= frame.maxY else { return false }
         let local = CGPoint(x: point.x - frame.minX, y: max(0.01, frame.maxY - point.y))
-        return NotchOutline(expanded: expanded).path(in: CGRect(origin: .zero, size: frame.size)).contains(local)
+        let outline = NotchOutline(compactHeight: topInset + CompactNotchMetrics(mode: mode).heightBelowCamera)
+        return outline.path(in: CGRect(origin: .zero, size: frame.size)).contains(local)
     }
 
     func opensOnHover(at point: CGPoint, mode: FocusMode) -> Bool {
@@ -116,6 +108,8 @@ final class NotchController: NSObject {
     private let face = FocusPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private let planner = FocusPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
     private var host: NotchHostingView?
+    private var displayLink: CADisplayLink?
+    private var transition: (fromHeight: CGFloat, target: NSRect, start: CFTimeInterval, duration: CFTimeInterval)?
     private var statusItem: NSStatusItem?
     private var subscriptions = Set<AnyCancellable>()
     private var localMonitor: Any?
@@ -196,7 +190,7 @@ final class NotchController: NSObject {
         // Read the system cursor directly so hovering also works outside our window.
         let sampler = Timer(timeInterval: 0.10, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.face.isVisible, !self.keyboardOpen, !self.planner.isVisible else { return }
+                guard let self, self.face.isVisible else { return }
                 self.trackPointer()
             }
         }
@@ -206,6 +200,7 @@ final class NotchController: NSObject {
     }
 
     func stop() {
+        stopMotion()
         hoverSampler?.invalidate()
         hoverSampler = nil
         cancelHover()
@@ -223,7 +218,6 @@ final class NotchController: NSObject {
     private func configure(_ panel: FocusPanel, title: String) {
         panel.title = title
         panel.setAccessibilityLabel(title)
-        panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
         panel.backgroundColor = .clear
         panel.isOpaque = false
         panel.hasShadow = false
@@ -244,6 +238,7 @@ final class NotchController: NSObject {
         let screens = NSScreen.screens
         guard !screens.isEmpty else {
             placement = nil
+            stopMotion()
             face.orderOut(nil)
             planner.orderOut(nil)
             return
@@ -261,9 +256,25 @@ final class NotchController: NSObject {
         let systemHidesMenu = options.contains(.hideMenuBar) || options.contains(.autoHideMenuBar)
         let hiddenInFullScreen = options.contains(.fullScreen) && systemHidesMenu && requestedDisplay == nil && !expanded
         if (!placement.isHardwareNotch && !expanded) || hiddenInFullScreen {
+            stopMotion()
             face.orderOut(nil)
             return
         }
+
+        let rect = placement.faceFrame(expanded: expanded, mode: store.mode)
+        let motion = animated && face.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        let retracting = motion && face.frame.height > rect.height && host?.rootView.expanded == true
+        showContent(expanded: expanded || retracting, at: placement)
+        resizeFace(to: rect, animated: motion)
+        if !face.isVisible { face.orderFrontRegardless() }
+        if planner.isVisible { planner.setFrame(placement.plannerFrame(under: rect), display: true) }
+    }
+
+    private func showContent(expanded: Bool, at placement: NotchPlacement) {
+        // The header buttons share the menu-bar band. Raise the panel for the
+        // reveal and restore its ordinary floating level when it is compact again.
+        let level = expanded ? NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1) : .floating
+        if face.level != level { face.level = level }
         let fresh = NotchFace(store: store, expanded: expanded, cameraWidth: placement.cameraWidth,
                               topInset: placement.topInset, openPlanner: { [weak self] in self?.openPlanner(compose: $0) })
         if let host { host.rootView = fresh }
@@ -274,23 +285,58 @@ final class NotchController: NSObject {
             face.contentView = view
             host = view
         }
-        let rect = placement.faceFrame(expanded: expanded, mode: store.mode)
-        if rect != face.frame {
-            let motion = animated && face.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-            if motion {
-                NSAnimationContext.runAnimationGroup { context in
-                    context.duration = 0.19
-                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                    face.animator().setFrame(rect, display: true)
-                }
-            } else {
-                face.setFrame(rect, display: true)
-            }
+    }
+
+    private func resizeFace(to rect: NSRect, animated: Bool) {
+        if animated, transition?.target == rect { return }
+        stopMotion()
+        let height = face.frame.height
+        guard animated, abs(height - rect.height) > 0.5 else {
+            finishMotion(at: rect)
+            return
         }
-        if !face.isVisible { face.orderFrontRegardless() }
-        if planner.isVisible {
-            planner.setFrame(placement.plannerFrame(under: rect), display: true)
+
+        // Starting again from the visible height also makes a reversal continuous.
+        let distance = abs(height - rect.height)
+        let fullTravel = max(1, ExpandedNotchMetrics.heightBelowCamera
+                              - CompactNotchMetrics(mode: store.mode).heightBelowCamera)
+        let duration = (expanded ? 0.25 : 0.20) * Double(min(1, max(0.35, distance / fullTravel)))
+        transition = (height, rect, CACurrentMediaTime(), duration)
+        setFaceHeight(height, in: rect)
+        let link = face.displayLink(target: self, selector: #selector(advanceMotion))
+        displayLink = link
+        link.add(to: .main, forMode: .common)
+    }
+
+    @objc private func advanceMotion() {
+        guard let transition else { return }
+        let progress = min(1, (CACurrentMediaTime() - transition.start) / transition.duration)
+        if progress >= 1 {
+            finishMotion(at: transition.target)
+        } else {
+            let eased = progress * progress * (3 - 2 * progress)
+            setFaceHeight(transition.fromHeight + (transition.target.height - transition.fromHeight) * eased,
+                          in: transition.target)
         }
+    }
+
+    private func setFaceHeight(_ height: CGFloat, in target: NSRect) {
+        let rect = NSRect(x: target.minX, y: target.maxY - height, width: target.width, height: height)
+        if face.frame != rect { face.setFrame(rect, display: true) }
+    }
+
+    private func finishMotion(at target: NSRect) {
+        stopMotion()
+        if face.frame != target { face.setFrame(target, display: true) }
+        if !expanded, host?.rootView.expanded == true, let placement {
+            showContent(expanded: false, at: placement)
+        }
+    }
+
+    private func stopMotion() {
+        displayLink?.invalidate()
+        displayLink = nil
+        transition = nil
     }
 
     private func cancelHover() {
@@ -300,16 +346,19 @@ final class NotchController: NSObject {
     }
 
     private func trackPointer() {
-        guard face.isVisible, let placement else { return }
+        guard face.isVisible, !keyboardOpen, !planner.isVisible, let placement else { return }
         let point = pointerLocation()
-        let bounds = placement.faceFrame(expanded: expanded, mode: store.mode)
-        let onFace = placement.contains(point, expanded: expanded, mode: store.mode)
-        let overClearCorner = bounds.contains(point) && !onFace
-        if face.ignoresMouseEvents != overClearCorner { face.ignoresMouseEvents = overClearCorner }
-        guard !keyboardOpen, !planner.isVisible else { return }
-        let inside = expanded ? onFace : placement.opensOnHover(at: point, mode: store.mode)
+        // WindowServer hit-tests this nonopaque window's actual pixels. Disabling the
+        // entire panel over a clear corner can swallow the next click on a nearby control.
+        let onFace = placement.contains(point, in: face.frame, mode: store.mode)
+        let inside = expanded ? placement.contains(point, expanded: true, mode: store.mode)
+                              : placement.opensOnHover(at: point, mode: store.mode)
         if suppressHoverUntilExit {
-            if !inside { suppressHoverUntilExit = false }
+            if !inside && !onFace { suppressHoverUntilExit = false }
+            return
+        }
+        if !expanded, transition != nil, host?.rootView.expanded == true, onFace {
+            setExpanded(true)
             return
         }
         guard inside != expanded else {
@@ -403,7 +452,11 @@ final class NotchController: NSObject {
 
     private func dismissAll() {
         planner.orderOut(nil)
-        suppressHoverUntilExit = placement?.opensOnHover(at: pointerLocation(), mode: store.mode) ?? false
+        if let placement {
+            let point = pointerLocation()
+            suppressHoverUntilExit = placement.opensOnHover(at: point, mode: store.mode)
+                || placement.contains(point, in: face.frame, mode: store.mode)
+        }
         setExpanded(false)
     }
 

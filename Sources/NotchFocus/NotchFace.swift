@@ -41,11 +41,22 @@ struct NotchFace: View {
         }
     }
 
+    private var outline: NotchOutline {
+        NotchOutline(compactHeight: topInset + CompactNotchMetrics(mode: store.mode).heightBelowCamera)
+    }
+
     var body: some View {
         ZStack {
-            NotchOutline(expanded: expanded).fill(housingBlack)
+            outline.fill(housingBlack)
             if expanded {
-                expandedContent
+                // Keep the detail layout steady while the window reveals its height from the top.
+                GeometryReader { geometry in
+                    expandedContent
+                        .frame(width: geometry.size.width,
+                               height: topInset + ExpandedNotchMetrics.heightBelowCamera,
+                               alignment: .top)
+                }
+                .clipped()
             } else if hasTimer {
                 compactContent
             }
@@ -67,20 +78,18 @@ struct NotchFace: View {
         .foregroundStyle(faceInk)
         .preferredColorScheme(.dark)
         .iconTooltipHost(topInset: topInset, sideInset: 23)
-        .clipShape(NotchOutline(expanded: expanded))
-        .contentShape(NotchOutline(expanded: expanded))
+        .clipShape(outline)
+        .contentShape(outline)
     }
 
     // A single open path keeps the shrinking stroke continuous through both corners.
     private func progressTrack(in size: CGSize) -> Path {
-        let left, top, bottomInset, radius: CGFloat
-        if expanded {
-            (left, top, bottomInset, radius) = (14, 15, 5, 13)
-        } else if store.mode == .onBreak {
-            (left, top, bottomInset, radius) = (14, 9, 2.25, 6)
-        } else {
-            (left, top, bottomInset, radius) = (17, 12, 5, 8)
-        }
+        let rest = store.mode == .onBreak
+        let progress = outline.reveal(at: size.height)
+        let left = rest ? 14 : 17 - 3 * progress
+        let top = rest ? 9 + 6 * progress : 12 + 3 * progress
+        let bottomInset = rest ? 2.25 + 2.75 * progress : 5
+        let radius = rest ? 6 + 7 * progress : 8 + 5 * progress
         let right = size.width - left
         let bottom = size.height - bottomInset
         var path = Path()
@@ -173,7 +182,7 @@ struct NotchFace: View {
                 }
                 .frame(minHeight: 24).contentShape(Rectangle())
             }
-            .accessibilityLabel("Open task planner").help("Open task planner")
+            .accessibilityLabel("Open task planner").iconTooltip("Open task planner")
         }
         .fixedSize()
     }
@@ -210,6 +219,7 @@ struct NotchFace: View {
                     Text(clock).font(.system(size: 25, weight: .semibold).monospacedDigit())
                     Spacer()
                     Button("End break", action: store.endBreak)
+                        .iconTooltip("End break")
                 }
             } else {
                 ScrollView {
@@ -285,10 +295,15 @@ struct NotchFace: View {
 
 // The top corners turn out into the menu bar like the shoulders of the camera housing.
 struct NotchOutline: Shape {
-    let expanded: Bool
+    let compactHeight: CGFloat
+
+    func reveal(at height: CGFloat) -> CGFloat {
+        min(1, max(0, (height - compactHeight) / 80))
+    }
+
     func path(in rect: CGRect) -> Path {
         let wing: CGFloat = 8
-        let radius: CGFloat = expanded ? 19 : 11
+        let radius = 11 + 8 * reveal(at: rect.height)
         let left = rect.minX + wing, right = rect.maxX - wing
         var path = Path()
         path.move(to: CGPoint(x: rect.minX, y: rect.minY))

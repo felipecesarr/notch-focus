@@ -64,6 +64,7 @@ struct ActiveTaskDetails: View {
                     .foregroundStyle(Color(white: 0.08))
                     .frame(width: 30, height: 30)
                     .background(task.category.tint, in: Circle())
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel(action)
             .iconTooltip(onBreak ? action : action + " focus")

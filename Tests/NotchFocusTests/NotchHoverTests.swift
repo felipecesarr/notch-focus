@@ -37,18 +37,19 @@ final class NotchHoverTests: XCTestCase {
         XCTAssertTrue(panel.isVisible)
         XCTAssertFalse(panel.hasShadow)
         XCTAssertFalse(planner.hasShadow)
+        let placement = NotchPlacement(screen)
+        let idle = placement.faceFrame(expanded: false, mode: .idle)
+        let idleOpen = placement.faceFrame(expanded: true, mode: .idle)
         let idleWidth = panel.frame.width
         XCTAssertEqual(idleWidth, right.minX - left.maxX + 16, accuracy: 1)
-        let cameraWidth = right.minX - left.maxX
-        let expandedWidth = ExpandedNotchMetrics.fittedWidth(cameraWidth: cameraWidth, screenWidth: screen.frame.width)
 
         pointer = CGPoint(x: left.maxX - 16, y: belowCamera.y)
         try await Task.sleep(for: .milliseconds(350))
         XCTAssertEqual(lastSample, pointer)
-        XCTAssertEqual(panel.frame.width, idleWidth, accuracy: 1, "Moving beside the camera should leave the notch closed.")
+        XCTAssertEqual(panel.frame, idle, "Moving beside the camera should leave the notch closed.")
 
         pointer = belowCamera
-        try await waitForWidth(expandedWidth, on: panel)
+        try await waitForFrame(idleOpen, on: panel, startingAt: idle)
         XCTAssertFalse(panel.canBecomeKey)
         XCTAssertFalse(panel.isKeyWindow)
         XCTAssertEqual(panel.frame.midX, center, accuracy: 1)
@@ -59,14 +60,34 @@ final class NotchHoverTests: XCTestCase {
         XCTAssertEqual(plannerFrame.midX, panel.frame.midX, accuracy: 1)
         XCTAssertEqual(plannerFrame.width, min(720, screen.visibleFrame.width - 12), accuracy: 1)
 
+        if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            pointer = away
+            let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+            while panel.frame.height >= idleOpen.height - 2 && ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(8))
+            }
+            let turning = panel.frame
+            XCTAssertGreaterThan(turning.height, idle.height)
+            XCTAssertLessThan(turning.height, idleOpen.height)
+            // Re-enter the still-visible details below the original activation area.
+            pointer = CGPoint(x: center, y: belowCamera.y - 14)
+            while panel.frame != idleOpen && ContinuousClock.now < deadline {
+                XCTAssertEqual(panel.frame.minX, idle.minX)
+                XCTAssertEqual(panel.frame.maxX, idle.maxX)
+                XCTAssertEqual(panel.frame.maxY, idle.maxY)
+                XCTAssertGreaterThan(panel.frame.height, idle.height)
+                try await Task.sleep(for: .milliseconds(8))
+            }
+            XCTAssertEqual(panel.frame, idleOpen)
+        }
         pointer = away
-        try await waitForWidth(idleWidth, on: panel)
+        try await waitForFrame(idle, on: panel, startingAt: idleOpen)
         pointer = belowCamera
-        try await waitForWidth(expandedWidth, on: panel)
+        try await waitForFrame(idleOpen, on: panel, startingAt: idle)
         panel.cancelOperation(nil)
-        try await waitForWidth(idleWidth, on: panel)
+        try await waitForFrame(idle, on: panel, startingAt: idleOpen)
         try await Task.sleep(for: .milliseconds(450))
-        XCTAssertEqual(panel.frame.width, idleWidth, accuracy: 1, "Escape suppresses hover until the pointer leaves.")
+        XCTAssertEqual(panel.frame, idle, "Escape suppresses hover until the pointer leaves.")
         pointer = away
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
         while lastSample != away && ContinuousClock.now < deadline {
@@ -74,50 +95,72 @@ final class NotchHoverTests: XCTestCase {
         }
         XCTAssertEqual(lastSample, away, "The pointer monitor should observe leaving the activation area.")
         pointer = belowCamera
-        try await waitForWidth(expandedWidth, on: panel)
+        try await waitForFrame(idleOpen, on: panel, startingAt: idle)
         XCTAssertFalse(panel.isKeyWindow)
 
         pointer = away
-        try await waitForWidth(idleWidth, on: panel)
+        try await waitForFrame(idle, on: panel, startingAt: idleOpen)
         let id = try XCTUnwrap(store.saveRoutine(id: nil, title: "Study TypeScript", notes: "", duration: 1500,
                                                 breakDuration: 300, cycles: ["Recall", "Learn", "Explain"],
                                                 category: .study, weeklyTarget: 3))
         store.enqueue(id, cycleIndex: 1)
         store.startNext()
         let focus = CompactNotchMetrics(mode: .focusing)
-        try await waitForWidth(cameraWidth + focus.leftWing + focus.rightWing, on: panel)
+        let focusClosed = placement.faceFrame(expanded: false, mode: .focusing)
+        let focusOpen = placement.faceFrame(expanded: true, mode: .focusing)
+        try await waitForFrame(focusClosed, on: panel)
         XCTAssertEqual(panel.frame.minX, left.maxX - focus.leftWing, accuracy: 1)
         XCTAssertEqual(panel.frame.maxX, right.minX + focus.rightWing, accuracy: 1)
         XCTAssertEqual(panel.frame.height, screen.safeAreaInsets.top + focus.heightBelowCamera, accuracy: 1)
 
-        // Both compact wings must stay inside the centered face as it opens.
+        // Either wing must stay under the pointer as the bottom edge opens.
         let runningFrame = panel.frame
         for x in [runningFrame.minX + 28, runningFrame.maxX - 28] {
             pointer = CGPoint(x: x, y: runningFrame.minY + 3)
-            try await waitForWidth(expandedWidth, on: panel)
+            try await waitForFrame(focusOpen, on: panel, startingAt: focusClosed)
             XCTAssertTrue(panel.frame.contains(pointer))
             XCTAssertLessThanOrEqual(panel.frame.minX, runningFrame.minX + 1)
             XCTAssertGreaterThanOrEqual(panel.frame.maxX, runningFrame.maxX - 1)
             XCTAssertFalse(panel.isKeyWindow)
             pointer = away
-            try await waitForWidth(runningFrame.width, on: panel)
+            try await waitForFrame(focusClosed, on: panel, startingAt: focusOpen)
         }
 
         time.addTimeInterval(1500)
         store.tick()
         XCTAssertEqual(store.mode, .onBreak)
         let rest = CompactNotchMetrics(mode: .onBreak)
-        try await waitForWidth(cameraWidth + rest.leftWing + rest.rightWing, on: panel)
+        let breakClosed = placement.faceFrame(expanded: false, mode: .onBreak)
+        let breakOpen = placement.faceFrame(expanded: true, mode: .onBreak)
+        try await waitForFrame(breakClosed, on: panel)
         XCTAssertLessThan(rest.rightWing, focus.rightWing)
         XCTAssertEqual(panel.frame.minX, left.maxX - rest.leftWing, accuracy: 1)
         XCTAssertEqual(panel.frame.maxY, screen.frame.maxY, accuracy: 1)
+        pointer = belowCamera
+        try await waitForFrame(breakOpen, on: panel, startingAt: breakClosed)
+        pointer = away
+        try await waitForFrame(breakClosed, on: panel, startingAt: breakOpen)
     }
 
-    func testExpandedWidthCoversWideCameraAndFitsNarrowDisplay() {
-        let focus = CompactNotchMetrics(mode: .focusing)
-        XCTAssertEqual(ExpandedNotchMetrics.fittedWidth(cameraWidth: 208, screenWidth: 1710), 568)
-        XCTAssertEqual(ExpandedNotchMetrics.fittedWidth(cameraWidth: 280, screenWidth: 2300), 280 + 2 * focus.rightWing)
-        XCTAssertEqual(ExpandedNotchMetrics.fittedWidth(cameraWidth: 90, screenWidth: 550), 538)
+    @MainActor
+    func testHoverKeepsBothEdgesAndTheTopInEveryMode() {
+        for screen in NSScreen.screens {
+            let placement = NotchPlacement(screen)
+            for mode in [FocusMode.idle, .focusing, .paused, .onBreak] {
+                let closed = placement.faceFrame(expanded: false, mode: mode)
+                let open = placement.faceFrame(expanded: true, mode: mode)
+                if placement.isHardwareNotch {
+                    XCTAssertEqual(open.minX, closed.minX)
+                    XCTAssertEqual(open.maxX, closed.maxX)
+                } else {
+                    XCTAssertEqual(open.width, min(568, screen.frame.width - 12), accuracy: 1)
+                    XCTAssertEqual(open.midX, screen.frame.midX, accuracy: 1)
+                }
+                XCTAssertEqual(open.maxY, closed.maxY)
+                XCTAssertLessThan(open.minY, closed.minY)
+                XCTAssertTrue(screen.frame.contains(open))
+            }
+        }
     }
 
     @MainActor
@@ -135,7 +178,9 @@ final class NotchHoverTests: XCTestCase {
         let topInset: CGFloat = 37.5
         let face = NotchFace(store: store, expanded: true, cameraWidth: 208, topInset: topInset, openPlanner: { _ in })
         let host = NSHostingView(rootView: face.environment(\.accessibilityEnabled, true))
-        let frame = CGRect(x: 0, y: 0, width: ExpandedNotchMetrics.width, height: topInset + ExpandedNotchMetrics.heightBelowCamera)
+        let compact = CompactNotchMetrics(mode: .focusing)
+        let frame = CGRect(x: 0, y: 0, width: 208 + compact.leftWing + compact.rightWing,
+                           height: topInset + ExpandedNotchMetrics.heightBelowCamera)
         let window = NSWindow(contentRect: frame, styleMask: .borderless, backing: .buffered, defer: false)
         host.sizingOptions = []
         window.contentView = host
@@ -168,11 +213,24 @@ final class NotchHoverTests: XCTestCase {
     }
 
     @MainActor
-    private func waitForWidth(_ width: CGFloat, on panel: NSWindow, file: StaticString = #filePath, line: UInt = #line) async throws {
+    private func waitForFrame(_ target: NSRect, on panel: NSWindow, startingAt start: NSRect? = nil,
+                              file: StaticString = #filePath, line: UInt = #line) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(3))
-        while abs(panel.frame.width - width) > 1 && ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
+        var intermediate = false
+        while panel.frame != target && ContinuousClock.now < deadline {
+            if let start {
+                let frame = panel.frame
+                XCTAssertEqual(frame.minX, target.minX, accuracy: 0.01, file: file, line: line)
+                XCTAssertEqual(frame.maxX, target.maxX, accuracy: 0.01, file: file, line: line)
+                XCTAssertEqual(frame.maxY, target.maxY, accuracy: 0.01, file: file, line: line)
+                if frame.height > min(start.height, target.height) + 1,
+                   frame.height < max(start.height, target.height) - 1 { intermediate = true }
+            }
+            try await Task.sleep(for: .milliseconds(8))
         }
-        XCTAssertEqual(panel.frame.width, width, accuracy: 1, file: file, line: line)
+        XCTAssertEqual(panel.frame, target, file: file, line: line)
+        if start != nil && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            XCTAssertTrue(intermediate, "Expected a vertical reveal with intermediate window heights.", file: file, line: line)
+        }
     }
 }
