@@ -4,7 +4,7 @@ A native macOS task timer for the MacBook camera notch. It runs as a menu-bar ap
 
 ## Use the notch
 
-During focus, the category and countdown sit to the left of the camera. The task name and cycle count, such as **2/3**, sit to the right. Hover just below the camera to see details for the active task, including the full cycle name. During a break the compact notch reads **Break**. The remaining-time line follows the lower edge in the routine’s pastel category color. The menu-bar timer also opens the panel on another display.
+During focus, the category and countdown sit to the left of the camera. The task name and cycle count, such as **2/3**, sit to the right. Hover just below the camera to see the active task’s notes and ordered subtasks. The current subtask is marked. Rest the pointer on an icon button to see its action. During a break the compact notch reads **Break**. The remaining-time line follows the lower edge in the routine’s pastel category color. The menu-bar timer also opens the panel on another display.
 
 ## Create a routine
 

@@ -36,7 +36,19 @@ private final class NotchHostingView: NSHostingView<NotchFace> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-private struct NotchPlacement {
+enum ExpandedNotchMetrics {
+    static let width: CGFloat = 568
+    static let heightBelowCamera: CGFloat = 214
+
+    static func fittedWidth(cameraWidth: CGFloat, screenWidth: CGFloat) -> CGFloat {
+        // Centering on a wide camera must still cover the longer compact wing.
+        let focus = CompactNotchMetrics(mode: .focusing)
+        let coveredWidth = cameraWidth + 2 * max(focus.leftWing, focus.rightWing)
+        return min(max(width, coveredWidth), screenWidth - 12)
+    }
+}
+
+struct NotchPlacement {
     let screen: NSScreen
     let isHardwareNotch: Bool
     let cameraWidth: CGFloat
@@ -64,8 +76,8 @@ private struct NotchPlacement {
 
     func faceFrame(expanded: Bool, mode: FocusMode) -> NSRect {
         if expanded {
-            let width = min(684, screen.frame.width - 12)
-            let height = topInset + 190
+            let width = ExpandedNotchMetrics.fittedWidth(cameraWidth: cameraWidth, screenWidth: screen.frame.width)
+            let height = topInset + ExpandedNotchMetrics.heightBelowCamera
             return NSRect(x: centerX - width / 2, y: topY - height, width: width, height: height)
         }
         let metrics = CompactNotchMetrics(mode: mode)

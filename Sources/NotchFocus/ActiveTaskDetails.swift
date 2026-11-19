@@ -8,82 +8,155 @@ struct ActiveTaskDetails: View {
 
     private let secondaryText = Color(white: 0.70)
 
-    private var afterBreak: String? {
+    private var nextAfterBreak: Int? {
         guard store.mode == .onBreak, let next = store.queue.first,
               next.taskID == task.id, task.cycles.indices.contains(next.cycleIndex) else { return nil }
-        return "After break · " + task.cycles[next.cycleIndex]
+        return next.cycleIndex
     }
 
-    private var detailsLabel: String {
-        var parts = [task.title]
-        if task.routine != nil {
-            parts.append("Cycle \(store.activeCycleIndex + 1) of \(task.cycles.count), \(store.activeCycleTitle)")
+    private var notesText: some View {
+        Text(task.notes)
+            .font(.system(size: 12)).foregroundStyle(secondaryText)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var taskSummary: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(task.title)
+                .font(.system(size: 21, weight: .semibold)).foregroundStyle(.white)
+                .lineLimit(task.notes.isEmpty ? 2 : 1).help(task.title)
+            if !task.notes.isEmpty {
+                if task.routine == nil {
+                    ScrollView { notesText }.scrollBounceBehavior(.basedOnSize)
+                } else {
+                    // Size the notes viewport to whole lines, even when the full note is much longer.
+                    Text(task.notes)
+                        .font(.system(size: 12)).lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .hidden()
+                        .overlay(alignment: .topLeading) {
+                            ScrollView { notesText }.scrollBounceBehavior(.basedOnSize)
+                        }
+                }
+            }
         }
-        if !task.notes.isEmpty { parts.append(task.notes) }
-        if let afterBreak { parts.append(afterBreak) }
-        return parts.joined(separator: ". ")
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel([task.title, task.notes].filter { !$0.isEmpty }.joined(separator: ". "))
+    }
+
+    private var timerControl: some View {
+        let onBreak = store.mode == .onBreak
+        let playing = store.mode == .focusing
+        let action = onBreak ? "End break" : playing ? "Pause" : "Resume"
+        return HStack(spacing: 10) {
+            VStack(alignment: .trailing, spacing: 0) {
+                Text(clock).font(.system(size: 23, weight: .medium).monospacedDigit())
+                Text(phase).font(.system(size: 10.5, weight: .medium)).foregroundStyle(secondaryText)
+            }
+            .accessibilityElement(children: .combine)
+            Button {
+                if onBreak { store.endBreak() } else { store.toggleFocus(task.id) }
+            } label: {
+                Image(systemName: onBreak ? "forward.end.fill" : playing ? "pause.fill" : "play.fill")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Color(white: 0.08))
+                    .frame(width: 30, height: 30)
+                    .background(task.category.tint, in: Circle())
+            }
+            .accessibilityLabel(action)
+            .iconTooltip(onBreak ? action : action + " focus")
+        }
+        .fixedSize()
+    }
+
+    private func subtaskRow(_ index: Int) -> some View {
+        let active = index == store.activeCycleIndex
+        let tint = task.category.tint
+        return HStack(alignment: .firstTextBaseline, spacing: 9) {
+            Text(String(format: "%02d", index + 1))
+                .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+                .foregroundStyle(active ? tint : secondaryText)
+                .frame(minWidth: 17, alignment: .leading)
+            Text(task.cycles[index])
+                .font(.system(size: 12.5, weight: active ? .semibold : .regular))
+                .foregroundStyle(active ? .white : Color(white: 0.78))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if active {
+                Text(store.mode == .onBreak ? "Finished" : store.mode == .paused ? "Paused" : "Now")
+                    .font(.system(size: 10.5, weight: .semibold)).foregroundStyle(tint).fixedSize()
+            }
+            if index == nextAfterBreak {
+                Text("Next").font(.system(size: 10.5, weight: .medium)).foregroundStyle(tint).fixedSize()
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 3)
+        .frame(minHeight: 25)
+        .background(active ? tint.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var subtaskList: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("Subtasks").font(.system(size: 11.5, weight: .semibold))
+                Text("\(store.activeCycleIndex + 1)/\(task.cycles.count)")
+                    .font(.system(size: 10.5).monospacedDigit()).foregroundStyle(secondaryText)
+            }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(spacing: 1) {
+                        ForEach(task.cycles.indices, id: \.self) { index in
+                            subtaskRow(index).id(index)
+                        }
+                    }
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .onChange(of: store.activeCycleIndex, initial: true) { _, index in proxy.scrollTo(index) }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(subtasksLabel)
+        .id(task.id)
+    }
+
+    private var subtasksLabel: String {
+        let items = task.cycles.enumerated().map { index, name in
+            var item = "\(index + 1). \(name)"
+            if index == store.activeCycleIndex {
+                item += store.mode == .onBreak ? ", just finished" : ", current"
+            }
+            if index == nextAfterBreak { item += ", next after break" }
+            return item
+        }
+        return (["Subtasks"] + items).joined(separator: ". ")
+    }
+
+    private var cadence: String {
+        var parts = [plannerTime(task.duration) + " focus"]
+        if task.routine != nil { parts.append(plannerTime(task.breakDuration) + " break") }
+        if task.weeklyTarget > 0 { parts.append("\(task.weeklyTarget)× per week") }
+        return parts.joined(separator: "  ·  ")
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 24) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(task.title)
-                            .font(.system(size: 21, weight: .semibold))
-                        if task.routine != nil, !store.activeCycleTitle.isEmpty {
-                            HStack(alignment: .firstTextBaseline, spacing: 7) {
-                                Text("\(store.activeCycleIndex + 1)/\(task.cycles.count)")
-                                    .monospacedDigit().fixedSize().foregroundStyle(task.category.tint)
-                                Text(store.activeCycleTitle)
-                            }
-                            .font(.system(size: 13, weight: .medium))
-                            .accessibilityElement(children: .combine)
-                        }
-                        if !task.notes.isEmpty {
-                            Text(task.notes).font(.system(size: 12)).foregroundStyle(secondaryText)
-                        }
-                        if let afterBreak {
-                            Text(afterBreak)
-                                .font(.system(size: 11.5)).foregroundStyle(secondaryText)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-                .scrollBounceBehavior(.basedOnSize)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(detailsLabel)
-                VStack(alignment: .trailing, spacing: 3) {
-                    Text(clock).font(.system(size: 23, weight: .semibold).monospacedDigit())
-                    Text(phase).font(.system(size: 11, weight: .medium)).foregroundStyle(secondaryText)
-                }
-                .fixedSize().accessibilityElement(children: .combine)
+            HStack(alignment: .center, spacing: 18) {
+                taskSummary.frame(maxWidth: .infinity, alignment: .leading)
+                timerControl
             }
-            HStack(spacing: 14) {
-                Label(plannerTime(task.duration) + " focus", systemImage: "timer")
-                if task.routine != nil {
-                    Label(plannerTime(task.breakDuration) + " break", systemImage: "cup.and.saucer")
-                }
-                if task.weeklyTarget > 0 {
-                    Label("\(task.weeklyTarget)× per week", systemImage: "repeat")
-                }
+            .frame(maxHeight: task.routine == nil ? .infinity : nil, alignment: .top)
+
+            if task.routine != nil { subtaskList }
+
+            HStack(spacing: 8) {
+                Text(cadence).font(.system(size: 11)).foregroundStyle(secondaryText)
                 Spacer(minLength: 6)
                 TaskCompletionAndQueueButtons(store: store, task: task)
-                Button {
-                    if store.mode == .onBreak { store.endBreak() }
-                    else { store.toggleFocus(task.id) }
-                } label: {
-                    let onBreak = store.mode == .onBreak
-                    let playing = store.mode == .focusing
-                    Label(onBreak ? "End break" : playing ? "Pause" : "Resume",
-                          systemImage: onBreak ? "forward.end.fill" : playing ? "pause.fill" : "play.fill")
-                        .font(.system(size: 12, weight: .semibold))
-                        .frame(minHeight: 27).contentShape(Rectangle())
-                }
-                .foregroundStyle(task.category.tint)
+                    .font(.system(size: 12, weight: .medium)).foregroundStyle(secondaryText)
             }
-            .font(.system(size: 11)).foregroundStyle(secondaryText)
         }
     }
 }
@@ -97,7 +170,7 @@ struct TaskCompletionAndQueueButtons: View {
         Button { store.toggleDone(task.id) } label: {
             Image(systemName: "checkmark").frame(width: 22, height: 27).contentShape(Rectangle())
         }
-        .accessibilityLabel("Complete " + task.title).help("Mark as done")
+        .accessibilityLabel("Complete " + task.title).iconTooltip("Mark task complete")
         Button {
             if let queued { store.removeQueued(queued.id) }
             else { store.enqueueRoutine(task.id) }
@@ -107,6 +180,6 @@ struct TaskCompletionAndQueueButtons: View {
                 .foregroundStyle(queued == nil ? Color(white: 0.65) : task.category.tint)
         }
         .accessibilityLabel("\(queued == nil ? "Queue" : "Remove queued") Pomodoro, \(task.title)")
-        .help(queued == nil ? "Queue this Pomodoro" : "Remove Pomodoro from queue")
+        .iconTooltip(queued == nil ? "Queue this routine" : "Remove from queue")
     }
 }

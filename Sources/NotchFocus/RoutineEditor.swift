@@ -189,6 +189,7 @@ struct RoutineEditor: View {
                                         Image(systemName: "ellipsis").frame(width: 24, height: 25).foregroundStyle(PlannerInk.secondary)
                                     }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                                         .accessibilityLabel("Options for cycle \(index + 1)")
+                                        .iconTooltip("Cycle options")
                                 }
                                 .padding(.horizontal, 5).frame(height: 28)
                                 .background(field == .cycle(cycle.id) ? draft.category.tint.opacity(0.09) : .clear,

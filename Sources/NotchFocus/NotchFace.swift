@@ -66,6 +66,7 @@ struct NotchFace: View {
         }
         .foregroundStyle(faceInk)
         .preferredColorScheme(.dark)
+        .iconTooltipHost(topInset: topInset, sideInset: 23)
         .clipShape(NotchOutline(expanded: expanded))
         .contentShape(NotchOutline(expanded: expanded))
     }
@@ -144,59 +145,90 @@ struct NotchFace: View {
             [task?.category.title, task?.title, number, phase, clock].compactMap { $0 }.joined(separator: ", "))
     }
 
-    private var expandedContent: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 13) {
-                if let task = store.activeTask {
-                    Label(task.category.title, systemImage: task.category.symbol)
-                        .foregroundStyle(task.category.tint)
-                } else {
-                    Text(hasTimer ? phase : "Today")
-                }
-                Spacer()
-                Button { openPlanner(true) } label: {
-                    Image(systemName: "plus").frame(width: 22, height: 22).contentShape(Rectangle())
-                }
-                .accessibilityLabel("Add a task").help("Add a task")
-                Button { openPlanner(false) } label: {
-                    HStack(spacing: 4) {
-                        Text("Planner")
-                        Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .medium))
-                    }
-                    .frame(minHeight: 22).contentShape(Rectangle())
-                }
-                .accessibilityLabel("Open task planner").help("Open task planner")
+    @ViewBuilder
+    private var panelLabel: some View {
+        if let task = store.activeTask {
+            HStack(spacing: 6) {
+                Image(systemName: task.category.symbol)
+                Text(task.category.title)
             }
-            .font(.system(size: 11.5, weight: .medium)).foregroundStyle(secondaryInk)
+            .foregroundStyle(task.category.tint)
+            .accessibilityElement(children: .combine)
+        } else {
+            Text(hasTimer ? phase : "Today")
+        }
+    }
 
+    private var plannerControls: some View {
+        HStack(spacing: 11) {
+            Button { openPlanner(true) } label: {
+                Image(systemName: "plus")
+                    .frame(width: 24, height: 24).contentShape(Rectangle())
+            }
+            .accessibilityLabel("Add a task").iconTooltip("Add a task")
+            Button { openPlanner(false) } label: {
+                HStack(spacing: 4) {
+                    Text("Planner")
+                    Image(systemName: "arrow.up.right").font(.system(size: 9, weight: .medium))
+                }
+                .frame(minHeight: 24).contentShape(Rectangle())
+            }
+            .accessibilityLabel("Open task planner").help("Open task planner")
+        }
+        .fixedSize()
+    }
+
+    private var panelHeader: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 0) {
+                panelLabel.frame(minWidth: 94, maxWidth: .infinity, alignment: .leading)
+                Color.clear.frame(width: cameraWidth + 12)
+                plannerControls.frame(minWidth: 94, maxWidth: .infinity, alignment: .trailing)
+            }
+            .frame(height: max(24, topInset))
+
+            // On a narrow display, move the controls below the housing.
+            VStack(spacing: 0) {
+                Color.clear.frame(height: topInset)
+                HStack {
+                    panelLabel
+                    Spacer()
+                    plannerControls
+                }
+            }
+        }
+        .font(.system(size: 11.5, weight: .medium)).foregroundStyle(secondaryInk)
+    }
+
+    private var expandedContent: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            panelHeader
             if let task = store.activeTask {
                 ActiveTaskDetails(store: store, task: task, clock: clock, phase: phase)
             } else if store.mode == .onBreak {
-                Text(clock).font(.system(size: 25, weight: .semibold).monospacedDigit())
-                Spacer()
-                Button("End break", action: store.endBreak)
-            } else {
-                HStack(alignment: .top, spacing: 28) {
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            if store.todayTasks.isEmpty {
-                                Text("No tasks for today").foregroundStyle(quietInk).padding(.top, 6)
-                            }
-                            ForEach(store.todayTasks) { task in idleTaskRow(task) }
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .scrollIndicators(.hidden)
-                    if let item = store.queue.first, let task = store.tasks.first(where: { $0.id == item.taskID }) {
-                        queuedItem(item, task: task).frame(width: 192, alignment: .leading)
-                    }
+                HStack {
+                    Text(clock).font(.system(size: 25, weight: .semibold).monospacedDigit())
+                    Spacer()
+                    Button("End break", action: store.endBreak)
                 }
-                .frame(maxHeight: .infinity, alignment: .top)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        if store.todayTasks.isEmpty {
+                            Text("No tasks for today").foregroundStyle(quietInk).padding(.top, 6)
+                        }
+                        ForEach(store.todayTasks) { task in idleTaskRow(task) }
+                    }.frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                if let item = store.queue.first, let task = store.tasks.first(where: { $0.id == item.taskID }) {
+                    queuedItem(item, task: task)
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .padding(.horizontal, 30)
-        .padding(.top, topInset + 3)
-        .padding(.bottom, hasTimer ? 16 : 12)
+        .padding(.horizontal, 27)
+        .padding(.bottom, hasTimer ? 18 : 12)
         .buttonStyle(.plain)
     }
 
@@ -227,7 +259,7 @@ struct NotchFace: View {
                 Image(systemName: "play.fill").font(.system(size: 12, weight: .semibold))
                     .frame(width: 24, height: 27).contentShape(Rectangle()).foregroundStyle(task.category.tint)
             }
-            .accessibilityLabel("Start " + task.title).help("Start focus")
+            .accessibilityLabel("Start " + task.title).iconTooltip("Start focus")
         }
         .frame(minHeight: 40)
     }
@@ -235,20 +267,18 @@ struct NotchFace: View {
     private func queuedItem(_ item: FocusQueueItem, task: FocusTask) -> some View {
         let whole = item.isWholeRoutine && item.cycleIndex == 0
         let name = !whole && task.cycles.indices.contains(item.cycleIndex) ? task.cycles[item.cycleIndex] : task.title
-        return VStack(alignment: .leading, spacing: 5) {
+        return HStack(spacing: 7) {
             Text("Up next").font(.system(size: 11, weight: .medium)).foregroundStyle(secondaryInk)
-            HStack(spacing: 7) {
-                Image(systemName: task.category.symbol).font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(task.category.tint)
-                Text(name).font(.system(size: 12.5, weight: .medium)).lineLimit(2)
-                Spacer(minLength: 1)
-                Button(action: store.startNext) {
-                    Image(systemName: "play.fill").font(.system(size: 10, weight: .semibold))
-                        .frame(width: 24, height: 27).contentShape(Rectangle()).foregroundStyle(task.category.tint)
-                }
-                .accessibilityLabel("Start next queued cycle").help("Start next queued cycle")
+            Image(systemName: task.category.symbol).font(.system(size: 12, weight: .medium))
+                .foregroundStyle(task.category.tint)
+            Text(name).font(.system(size: 12.5, weight: .medium)).lineLimit(1)
+                .help(whole ? task.title : "\(task.title) · \(name)")
+            Spacer(minLength: 1)
+            Button(action: store.startNext) {
+                Image(systemName: "play.fill").font(.system(size: 10, weight: .semibold))
+                    .frame(width: 24, height: 27).contentShape(Rectangle()).foregroundStyle(task.category.tint)
             }
-            .help(whole ? task.title : "\(task.title) · \(name)")
+            .accessibilityLabel("Start next queued cycle").iconTooltip("Start next queued cycle")
         }
     }
 }

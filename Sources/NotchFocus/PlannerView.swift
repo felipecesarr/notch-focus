@@ -34,6 +34,7 @@ struct PlannerGlyph: View {
 struct PlannerIconButton: View {
     let symbol: String
     let label: String
+    var tooltip: String? = nil
     var color = PlannerInk.secondary
     let action: () -> Void
     var body: some View {
@@ -44,7 +45,7 @@ struct PlannerIconButton: View {
                 .frame(width: 25, height: 25)
                 .contentShape(Rectangle())
         }
-        .help(label).accessibilityLabel(label)
+        .iconTooltip(tooltip ?? label).accessibilityLabel(label)
     }
 }
 
@@ -127,6 +128,7 @@ struct PlannerView: View {
         .foregroundStyle(PlannerInk.text)
         .preferredColorScheme(.dark)
         .background(PlannerInk.sidebar)
+        .iconTooltipHost()
         .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
         .onAppear { if compose { beginAdding() } }
         .onReceive(NotificationCenter.default.publisher(for: .notchFocusCompose)) { _ in beginAdding() }
@@ -226,6 +228,7 @@ struct PlannerView: View {
                         Image(systemName: "ellipsis").frame(width: 27, height: 24)
                     }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                         .accessibilityLabel("More options for \(task.title)")
+                        .iconTooltip("Routine options")
                         .popover(isPresented: $confirmDelete) {
                             VStack(alignment: .leading, spacing: 10) {
                                 Text("Delete this routine?").fontWeight(.semibold)
@@ -291,6 +294,7 @@ struct PlannerView: View {
                         Spacer(minLength: 4)
                         PlannerIconButton(symbol: queued ? "checkmark" : "text.badge.plus",
                                           label: queued ? "Cycle \(index + 1) queued" : "Queue cycle \(index + 1), \(task.cycles[index])",
+                                          tooltip: queued ? "Cycle already queued" : "Queue this cycle",
                                           color: queued ? task.category.tint : PlannerInk.tertiary) { store.enqueue(task.id, cycleIndex: index) }
                             .disabled(task.done || queued)
                     }.padding(.vertical, 5)
@@ -333,7 +337,7 @@ struct PlannerView: View {
                                     }
                                     Spacer()
                                     Text(plannerTime(task.duration)).help("Focus time per cycle").font(.system(size: 11).monospacedDigit()).foregroundStyle(PlannerInk.secondary)
-                                    PlannerIconButton(symbol: "minus.circle", label: "Remove \(name) from queue") { store.removeQueued(item.id) }
+                                    PlannerIconButton(symbol: "minus.circle", label: "Remove \(name) from queue", tooltip: "Remove from queue") { store.removeQueued(item.id) }
                                 }.padding(.vertical, 11)
                             }
                         }
